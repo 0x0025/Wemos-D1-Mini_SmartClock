@@ -31,13 +31,20 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 String arr_days[]={"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
 
 ///////////////Переменные/////////////////
+
+WiFiManager wifiManager;
+
 byte hh, mm, ss;//Часы минуты секунды
 
-unsigned long timing; // Переменная для хранения точки отсчета
+unsigned long timing, LostWiFiMillis; // Переменная для хранения точки отсчета
 
 String timeStr; //Строка с временем с нулями через точку
 
 byte curScr = 1; //Текущий экран
+
+bool LostWiFi = false;
+
+
 
 //const char APssid = "Connect-WIFI";
 //const char APpass = "PASSWORD";
@@ -63,14 +70,12 @@ void setup(){
   myOLED.print("to Connect-WIFI", LEFT, 40);  //Информация о точке доступа
   myOLED.print("pwd: PASSWORD", LEFT, 48);
   myOLED.update();
-  
-  WiFiManager wifiManager;
+
+
   wifiManager.autoConnect("Connect-WIFI", "PASSWORD");
-  
-  
+
   while ( WiFi.status() != WL_CONNECTED ) {
-    delay ( 100 );
-    Serial.print ( "." );
+    
   }
   
   myOLED.print("Starting NTP Client", LEFT, 56);
@@ -90,6 +95,30 @@ void setup(){
 
 void loop() {
   timeClient.update(); //Обновление времени
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (LostWiFi == 0){
+      LostWiFi = 1;
+      LostWiFiMillis = millis();
+    } else if(millis() - LostWiFiMillis > 180000) {
+      
+      myOLED.clrScr();
+      myOLED.setFont(SmallFont);
+      myOLED.print("Connection lost!", CENTER, 4);
+      myOLED.print("Please connest ", LEFT, 16); 
+      myOLED.print("to Connect-WIFI", LEFT, 24);
+      myOLED.print("pwd: PASSWORD", LEFT, 32);
+      myOLED.print("You can try to reset", LEFT, 40);
+      myOLED.print("the clock", LEFT, 48);
+      
+      myOLED.update();
+      
+      wifiManager.startConfigPortal("Connect-WIFI", "PASSWORD");
+    }
+    
+  } else {
+    LostWiFi = 0;
+  }
   
   hh = timeClient.getHours();
   mm = timeClient.getMinutes(); //Получение времени
