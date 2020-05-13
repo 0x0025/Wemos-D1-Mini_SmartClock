@@ -3,11 +3,12 @@
 #include <ESP8266WiFi.h>                //Предоставляет специальные процедуры Wi-Fi для ESP8266, которые мы вызываем для подключения к сети
 #include <WiFiUdp.h>                    //Обрабатывает отправку и получение пакетов UDP
 #include <OLED_I2C.h>                   //Библиотека дисплея
-#include <DNSServer.h>                  //Local DNS Server used for redirecting all requests to the configuration portal
-#include <ESP8266WebServer.h>           //Local WebServer used to serve the configuration portal
+#include <DNSServer.h>                  //Локальный DNS сервер для перенаправления всех запросов на страницу конфигурации
+#include <ESP8266WebServer.h>           //Локальный веб сервер для страници конфигурации WiFi
 #include <WiFiManager.h>                //Библиотека для удобного подключения к WiFi
 #include <ESP8266HTTPClient.h>          //HTTP клиент
 #include <ArduinoJson.h>                //Библиотека для работы с JSON
+#include <EEPROM.h>                     //Библиотека для работы с EEPROM
 ////////////////Настройки/////////////////
 
 //Когда часы не могут подключиться будет создана сеть,
@@ -16,16 +17,13 @@
 
 const byte nightBr = 19;                //Час включения ночной подсветки
 
-const byte logEn = 1;                   // 1 - Лог вкл 0 - лог выкл
+const byte devMode = 0;                 // 1 - Лог вкл 0 - лог выкл
 
 const String lat     = "55.75";         //Географические координаты
 const String lon     = "37.62";         //Москва
 
                                         //API ключ для openweathermap.org
 const String appid   = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; 
-
-const int timeOffset = 10800;           //Часовой ооффсет для МСК
-                                        //Ищется: оффсет в часах * 3600
 
 //////////////////OLED////////////////////
 
@@ -64,186 +62,103 @@ int temp, temp_min, temp_max;           //Переменные погоды: Т�
 byte humidity, clouds;                  //Влажность и облака в процентах
 String location, weather, description;  //Местоположение, погода, подробное описание погоды 
 float wind;                             //Ветер в м/с
+long timeOffset;
 
 
 
 void setup(){
+  unsigned long timer = millis();
   myOLED.begin(SSD1306_128X64);         //Инициализация дисплея
-  myOLED.clrScr();  
-  myOLED.setFont(SmallFont);            //Установка шрифта
-  myOLED.print("Starting OLED", LEFT, 8);
-  myOLED.update();
-  
-  myOLED.print("Starting Serial", LEFT, 16);
-  myOLED.update();
+  bootScr("Starting Serial", 0);
   Serial.begin(115200);
-                                        //Информация о точке доступа
-  myOLED.print("Connecting to Wi-FI", LEFT, 24);
-  myOLED.print("If its frozen,connect", LEFT, 32);
-  myOLED.print("to Connect-WIFI", LEFT, 40);  
-  myOLED.print("pwd: PASSWORD", LEFT, 48);
-  myOLED.update();
   
-  wifiManager.setDebugOutput(logEn);    //Вкл выкл лога wifiManager
+  wifiManager.setDebugOutput(devMode);  //Вкл выкл лога wifiManager
                                         //Подключение к сети
+  bootScr("autoConnect", 25);
   wifiManager.autoConnect("Connect-WIFI", "PASSWORD");
-
+  
   while (WiFi.status() != WL_CONNECTED){}
-  
-  myOLED.print("Starting NTP Client", LEFT, 56);
-  myOLED.update();
-  
+
+  bootScr("Updating weather", 50);      
+  int code = weatherUpdate();           //Обновление погоды
+  if ( code != 200){
+      myOLED.clrScr();
+      myOLED.print("Could not Access", CENTER, 16);
+      myOLED.print("OpenWeatherMap", CENTER, 24);
+      myOLED.print("Code:" + String( code ), CENTER, 32);
+      myOLED.update();
+      delay(1000);
+      myOLED.invert(1);
+      myOLED.update();
+      delay(1000);
+      myOLED.invert(0);
+      myOLED.print("Reseting...", CENTER, 42);
+      myOLED.update();
+      delay(1000);
+      ESP.reset();
+  }
+  lastUpd = millis();
+
+  bootScr("Starting NTPClient", 75);
   timeClient.begin();                   //Инициализация NTP клиента
   timeClient.setTimeOffset(timeOffset); //Установка оффсета времени
 
-  weatherUpdate();                      //Обновление погоды
-  lastUpd = millis();
   
-  myOLED.print("Done", LEFT, 64);
-  myOLED.update();
-  
-  delay(500);
+  bootScr("Done in " + String( millis() - timer ) + "ms", 100);
+  delay(700);
   myOLED.clrScr();
   timing = millis();
+  
 }
 
 
 
 void loop() {
   timeClient.update();                //Обновление времени
-
-  if (WiFi.status() != WL_CONNECTED) {//Если нет подключения
-    if (LostWiFi == 0){
-      LostWiFi = 1;                   //Ставим флаг
-      LostWiFiMillis = millis();
-      } else if(millis() - LostWiFiMillis > 180000) {
-                                      //Если прошло 3 мин
-      myOLED.clrScr();
-      myOLED.setFont(SmallFont);      //Выводим сообщение
-      myOLED.print("Connection lost!", CENTER, 4);
-      myOLED.print("Please connest ", LEFT, 16); 
-      myOLED.print("to Connect-WIFI", LEFT, 24);
-      myOLED.print("pwd: PASSWORD", LEFT, 32);
-      myOLED.print("You can try to reset", LEFT, 40);
-      myOLED.print("the clock", LEFT, 48);
-      myOLED.update();
-                                      //Запускаем конфиг портал
-      wifiManager.startConfigPortal("Connect-WIFI", "PASSWORD");
-    }
-    
-  } else{
-    LostWiFi = 0;                     //Иначе сбрасываем флаг
-  }
-
-  if (millis() - lastUpd > 120000){   //Обновление раз в 2 минуты
-    weatherUpdate();
-    lastUpd = millis();
+  
+  if (millis() - lastUpd > 120000){   //Обновление погоды раз в 2 минуты
+      weatherUpdate();
+      lastUpd = millis();
   }
   
   hh = timeClient.getHours();
   mm = timeClient.getMinutes();       //Запись времени без нулей
   ss = timeClient.getSeconds();       //в переменные
-
-  
-  timeStr = "";                       //Форматирование строки времени 
-  if (hh <= 9){                       //Добавляем нули где нужно
-    timeStr = timeStr + "0" + String(hh) + ".";
-  } else {
-    timeStr = timeStr + String(hh) + ".";
-  }
-  if (mm <= 9){
-    timeStr = timeStr + "0" + String(mm) + ".";
-  } else {
-    timeStr = timeStr + String(mm) + ".";
-  }
-  if (ss <= 9){
-    timeStr = timeStr + "0" + String(ss);
-  } else {
-    timeStr = timeStr + String(ss);
-  }
  
   if (hh >= nightBr) {                //Управление яркостью
     myOLED.setBrightness(1);          //nightBr - кол-во часов,
   } else{                             //когда включается пониженая яркость
     myOLED.setBrightness(255);
   }
-                                      //Конструкция смены экранов
-  switch(curScr) {                    
-    case 1:                           //Если сейчас экран 1
-      if (millis() - timing > 10000){ //Если прошло 10 сек
-        timing = millis(); 
-        if (logEn) {
-          Serial.println ("curScr 2");
-        }
-        curScr = 2;                   //То сейчас экран 2
-        scr2();                       //Вызов функции отрисовки 2 дисплея
-      }else{
-        scr1();                       //Иначе вызов функции отрисовки 1 дисплея
-        break;
-      }
-    break;
-
-    case 2:                           //Если сейчас экран 2
-      if (millis() - timing > 5000){  //Если прошло 5 сек
-        timing = millis(); 
-        if (logEn) {
-          Serial.println ("curScr 3");
-        }
-        curScr = 3;                   //То сейчас экран 3
-        scr3();                       //Вызов функции отрисовки 3 дисплея
-      }else{
-        scr2();                       //Иначе вызов функции отрисовки 2 дисплея
-        break;
-      }
-    break;
-
-    case 3:                           //Если сейчас экран 3
-      if (millis() - timing > 5000){  //Если прошло 5 сек
-        timing = millis(); 
-        if (logEn) {
-          Serial.println ("curScr 1");
-        }
-        curScr = 1;                   //То сейчас экран 1
-        scr1();                       //Вызов функции отрисовки 1 дисплея
-      }else{
-        scr3();                       //Иначе вызов функции отрисовки 3 дисплея
-        break;
-      }
-    break;
-    
-  }
   
+  updScr();
 }
 
-void weatherUpdate() {                 //Функция обновления погоды 
+
+
+int weatherUpdate() {                  //Функция обновления погоды 
   if (WiFi.status() == WL_CONNECTED) { //Выполняется только если WiFi подключен
-    if (logEn) {
-      Serial.println("Updating weather");
-    }
+    
+    logIf("Updating weather");
                                        //Формирование строки запроса
     String httpStr = String("http://api.openweathermap.org/data/2.5/weather") + String("?lat=") + String(lat) + String("&lon=") + String(lon) + String("&appid=") + String(appid) + String("&units=metric&lang=en");
     http.begin(httpStr);
     
-    if (logEn) {
-      Serial.println("Accessing: " + httpStr);
-    }
+    logIf("Accessing: " + httpStr);
     
-    int httpCode = http.GET();         //Запрос
+    int httpCode = http.GET();         //Запрос + получение кода
     String json = http.getString();    //Получение строки ответа
-    if (logEn) {
-      Serial.println("Http Code: " + String(httpCode) );
-      Serial.println("Got JSON: " + json);
-    }
+    logIf("Http Code: " + String(httpCode) );
+    logIf("Got JSON: " + json);
     http.end();
                                        //Парсинг JSON
     DeserializationError error = deserializeJson(doc, json);
-
+    
     if (error) {                       //Если не парсится
-      if (logEn) {
+      if (devMode) {
         Serial.print(F("deserializeJson() failed: "));
         Serial.println(error.c_str());
       }
-      return;
     }
 
     temp = doc["main"]["temp"];        //Запись значений в переменные
@@ -255,14 +170,37 @@ void weatherUpdate() {                 //Функция обновления п�
     humidity = doc["main"]["humidity"];
     clouds = doc["clouds"]["all"];
     location = doc["name"].as<String>();
+    timeOffset = doc["timezone"];
     
-    if (logEn) {
-      Serial.println("Temp: " + String(temp));
-    }
+    return httpCode;                  //Возвращаем http код
   }
 }
 
-void scr1() {
+
+                                         //Вывод лога если включен режим отладки
+void logIf(String msg){if(devMode){Serial.println(msg);}}
+
+
+
+void bootScr(String str, byte percent) { //Функция отрисовки загрузочного экрана
+  myOLED.setFont(SmallFont);             //Установка шрифта
+  myOLED.clrScr();  
+  myOLED.print(">:" + str, LEFT, 56);    //Строка состояния
+  String percentBar = "[";               //Формирование прогресбара
+  for ( byte i = 1; i <= (percent / 10); i++){
+    percentBar = percentBar + "=";
+  }
+  for ( byte i = 0; i < (10 - (percent / 10) ); i++){
+    percentBar = percentBar + "-";
+  }                                      //Вывод на экран
+  percentBar = percentBar + "] | " + String(percent) + "%";
+  myOLED.print(percentBar, CENTER, 48);
+  myOLED.update();                       //Обновление дисплея
+}
+
+
+
+void scr1() {                           //Функция отрисовки 1-го экрана
                                         //Форматирование строк
   String ForDate = timeClient.getFormattedDate();                   
   String justDate = ForDate.substring(0 , ForDate.indexOf( "T" ) ); 
@@ -280,7 +218,8 @@ void scr1() {
 }
 
 
-void scr2(){
+
+void scr2(){                            //Функция отрисовки 2-го экрана
   myOLED.clrScr();                      //Очистка буфера дисплея
   myOLED.setFont(SmallFont);
   myOLED.print(timeStr, CENTER, 4);     //Вывод информации на дисплей
@@ -309,7 +248,9 @@ void scr2(){
   myOLED.update();                      //Обновление дисплея
 }
 
-void scr3(){
+
+
+void scr3(){                                    //Функция отрисовки 3-го экрана
   myOLED.clrScr();                              //Очистка буфера дисплея
   myOLED.setFont(SmallFont);
   myOLED.print(timeStr, CENTER, 4);             //Вывод информации на дисплей
@@ -338,4 +279,61 @@ void scr3(){
   }
   
   myOLED.update();                              //Обновление дисплея
+}
+
+
+
+void updScr() {                       //Функция обновления и смены экранов 
+   
+  timeStr = "";                       //Форматирование строки времени 
+  if (hh <= 9){                       //Добавляем точки и нули где нужно
+    timeStr = timeStr + "0" + String(hh) + ".";
+  } else {
+    timeStr = timeStr + String(hh) + ".";
+  }
+  if (mm <= 9){
+    timeStr = timeStr + "0" + String(mm) + ".";
+  } else {
+    timeStr = timeStr + String(mm) + ".";
+  }
+  if (ss <= 9){
+    timeStr = timeStr + "0" + String(ss);
+  } else {
+    timeStr = timeStr + String(ss);
+  }     
+  
+  switch(curScr) {                    //Смена экранов
+    case 1:                           //Если сейчас экран 1
+      if (millis() - timing > 10000){ //Если прошло 10 сек
+        timing = millis(); 
+        curScr = 2;                   //То сейчас экран 2
+        scr2();                       //Вызов функции отрисовки 2 дисплея
+      }else{
+        scr1();                       //Иначе вызов функции отрисовки 1 дисплея
+        break;
+      }
+    break;
+
+    case 2:                           //Если сейчас экран 2
+      if (millis() - timing > 5000){  //Если прошло 5 сек
+        timing = millis(); 
+        curScr = 3;                   //То сейчас экран 3
+        scr3();                       //Вызов функции отрисовки 3 дисплея
+      }else{
+        scr2();                       //Иначе вызов функции отрисовки 2 дисплея
+        break;
+      }
+    break;
+
+    case 3:                           //Если сейчас экран 3
+      if (millis() - timing > 5000){  //Если прошло 5 сек
+        timing = millis(); 
+        curScr = 1;                   //То сейчас экран 1
+        scr1();                       //Вызов функции отрисовки 1 дисплея
+      }else{
+        scr3();                       //Иначе вызов функции отрисовки 3 дисплея
+        break;
+      }
+    break;
+  }
 }
