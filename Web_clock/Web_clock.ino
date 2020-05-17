@@ -23,7 +23,7 @@ const String lat = "55.75";             //Географические коор�
 const String lon = "37.62";             //Москва
 
                                         //API ключ для openweathermap.org
-const String appid = "77ed0b69d8ec98e69f4d978217852645"; 
+const String appid = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; 
 
 //////////////////OLED////////////////////
 
