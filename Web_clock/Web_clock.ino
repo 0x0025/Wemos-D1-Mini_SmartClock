@@ -8,22 +8,22 @@
 #include <WiFiManager.h>                //Библиотека для удобного подключения к WiFi
 #include <ESP8266HTTPClient.h>          //HTTP клиент
 #include <ArduinoJson.h>                //Библиотека для работы с JSON
-#include <EEPROM.h>                     //Библиотека для работы с EEPROM
 ////////////////Настройки/////////////////
 
-//Когда часы не могут подключиться будет создана сеть,
+//При первом включении создана сеть,
 //спомощью которой можно настроить Wi-Fi
 //SSID:Connect-WIFI password:PASSWORD
 
-const byte nightBr = 19;                //Час включения ночной подсветки
+const byte hhOn = 23;                   //Час включения ночного режима
+const byte hhOff = 7;                   //Час выключения ночного режима
 
 const byte devMode = 0;                 // 1 - Лог вкл 0 - лог выкл
 
-const String lat     = "55.75";         //Географические координаты
-const String lon     = "37.62";         //Москва
+const String lat = "55.75";             //Географические координаты
+const String lon = "37.62";             //Москва
 
                                         //API ключ для openweathermap.org
-const String appid   = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; 
+const String appid = "77ed0b69d8ec98e69f4d978217852645"; 
 
 //////////////////OLED////////////////////
 
@@ -50,7 +50,7 @@ DynamicJsonDocument doc(1500);
 byte hh, mm, ss;                        //Часы минуты секунды
 
                                         //Переменные для хранения точек отсчета
-unsigned long timing, LostWiFiMillis, lastUpd; 
+unsigned long timing, rndTiming, LostWiFiMillis, lastUpd; 
 
 String timeStr;                         //Строка с временем с нулями через точку
 
@@ -58,19 +58,20 @@ byte curScr = 1;                        //Текущий экран
 
 bool LostWiFi = false;                  //Флаг потери WiFi
 
-int temp, temp_min, temp_max;           //Переменные погоды: Тепература: сейчас, минимальная, максимальная
+int temp, temp_min, temp_max, wID;      //Переменные погоды: Тепература: сейчас, минимальная, максимальная. ID погоды
 byte humidity, clouds;                  //Влажность и облака в процентах
 String location, weather, description;  //Местоположение, погода, подробное описание погоды 
 float wind;                             //Ветер в м/с
-long timeOffset;
+long timeOffset;                        //Оффсет времени
+byte httpErrCount = 0;                  //Счетчик ошибок получения погоды 
 
-
+int nightX, nightY;                     //Координаты надписи в ночном режиме
 
 void setup(){
-  unsigned long timer = millis();
+  unsigned long timer = millis();       //Таймер загрузки
   myOLED.begin(SSD1306_128X64);         //Инициализация дисплея
-  bootScr("Starting Serial", 0);
-  Serial.begin(115200);
+  bootScr("Starting Serial", 0);        //Отрисовка загрузочного экрана
+  Serial.begin(115200);                 //Инициализация последовательного соединения
   
   wifiManager.setDebugOutput(devMode);  //Вкл выкл лога wifiManager
                                         //Подключение к сети
@@ -79,10 +80,10 @@ void setup(){
   
   while (WiFi.status() != WL_CONNECTED){}
 
-  bootScr("Updating weather", 50);      
+  bootScr("Updating weather", 50);      //Отрисовка загрузочного экрана
   int code = weatherUpdate();           //Обновление погоды
-  if ( code != 200){
-      myOLED.clrScr();
+  if ( code != 200){                    //Если не обновляется
+      myOLED.clrScr();                  //Выводим ошибку
       myOLED.print("Could not Access", CENTER, 16);
       myOLED.print("OpenWeatherMap", CENTER, 24);
       myOLED.print("Code:" + String( code ), CENTER, 32);
@@ -95,20 +96,22 @@ void setup(){
       myOLED.print("Reseting...", CENTER, 42);
       myOLED.update();
       delay(1000);
-      ESP.reset();
+      ESP.reset();                      //Перезагружаемся
   }
   lastUpd = millis();
 
-  bootScr("Starting NTPClient", 75);
+  bootScr("Starting NTPClient", 75);    //Отрисовка загрузочного экрана
   timeClient.begin();                   //Инициализация NTP клиента
   timeClient.setTimeOffset(timeOffset); //Установка оффсета времени
 
-  
+  randomSeed(millis());                 //Установка ключа генерации рандомных чисел
+
+                                        //Отрисовка загрузочного экрана
   bootScr("Done in " + String( millis() - timer ) + "ms", 100);
   delay(700);
   myOLED.clrScr();
-  timing = millis();
-  
+  timing = millis();                    //Таймер смены экранов
+  rndTiming = 0;                        //Таймер рандомного перемещения часов в ночном режиме
 }
 
 
@@ -120,18 +123,36 @@ void loop() {
       weatherUpdate();
       lastUpd = millis();
   }
+
+  if (WiFi.status() != WL_CONNECTED) {//Если нет подключения
+    if (LostWiFi == 0){
+      LostWiFi = 1;
+      LostWiFi = 1;                   //Ставим флаг
+      LostWiFiMillis = millis();
+      } else if(millis() - LostWiFiMillis > 180000) {
+        
+                                      //Если прошло 3 мин
+      myOLED.clrScr();                //Выводим ошибку
+      myOLED.print("Wifi connection", CENTER, 16);
+      myOLED.print("lost", CENTER, 24);
+      myOLED.update();
+      delay(1000);
+      myOLED.invert(1);
+      myOLED.update();
+      delay(1000);
+      myOLED.invert(0);
+      myOLED.print("Reseting...", CENTER, 42);
+      myOLED.update();
+      delay(1000);
+      ESP.reset();                    //Перезагружаемся
+    }
+  }
   
   hh = timeClient.getHours();
   mm = timeClient.getMinutes();       //Запись времени без нулей
   ss = timeClient.getSeconds();       //в переменные
- 
-  if (hh >= nightBr) {                //Управление яркостью
-    myOLED.setBrightness(1);          //nightBr - кол-во часов,
-  } else{                             //когда включается пониженая яркость
-    myOLED.setBrightness(255);
-  }
   
-  updScr();
+  updScr();                           //Обновляем экран
 }
 
 
@@ -140,17 +161,23 @@ int weatherUpdate() {                  //Функция обновления п�
   if (WiFi.status() == WL_CONNECTED) { //Выполняется только если WiFi подключен
     
     logIf("Updating weather");
-                                       //Формирование строки запроса
+                                       //Формирование строки запроса, знаю, что тупо сделал
     String httpStr = String("http://api.openweathermap.org/data/2.5/weather") + String("?lat=") + String(lat) + String("&lon=") + String(lon) + String("&appid=") + String(appid) + String("&units=metric&lang=en");
     http.begin(httpStr);
     
     logIf("Accessing: " + httpStr);
     
-    int httpCode = http.GET();         //Запрос + получение кода
+    int httpCode = http.GET();         //Запрос + получение http кода
     String json = http.getString();    //Получение строки ответа
     logIf("Http Code: " + String(httpCode) );
     logIf("Got JSON: " + json);
     http.end();
+
+    if(httpCode != 200) {              //Если код не 200
+      httpErrCount++;                  //Инкремент счетчика ошибок
+      logIf( "httpErrCount: " + String(httpErrCount) );
+      return httpCode;                 //Возвращаем код
+    }
                                        //Парсинг JSON
     DeserializationError error = deserializeJson(doc, json);
     
@@ -159,8 +186,9 @@ int weatherUpdate() {                  //Функция обновления п�
         Serial.print(F("deserializeJson() failed: "));
         Serial.println(error.c_str());
       }
+      return httpCode;                 //Возвращаем http код
     }
-
+    
     temp = doc["main"]["temp"];        //Запись значений в переменные
     temp_min = doc["main"]["temp_min"];
     temp_max = doc["main"]["temp_max"];
@@ -171,8 +199,11 @@ int weatherUpdate() {                  //Функция обновления п�
     clouds = doc["clouds"]["all"];
     location = doc["name"].as<String>();
     timeOffset = doc["timezone"];
+    wID = doc["weather"][0]["id"];
     
-    return httpCode;                  //Возвращаем http код
+    httpErrCount = 0;                  //Обнуляем счетчик ошибок
+    
+    return httpCode;                   //Возвращаем http код
   }
 }
 
@@ -211,8 +242,11 @@ void scr1() {                           //Функция отрисовки 1-г
   myOLED.print(timeStr , CENTER, 8 );   //Вывод информации на дисплей
 
   myOLED.setFont(SmallFont);
-  myOLED.print(justDate, CENTER, 40);                               
-  myOLED.print(String(temp) + " C", LEFT, 56);                      
+  myOLED.print(justDate, CENTER, 40);       
+  
+  if (httpErrCount < 10){               //Если счетчик ошибок больше 10, то не пишем темп-ру
+    myOLED.print(String(temp) + " C", LEFT, 56);
+  }                      
   
   myOLED.update();                      //Обновление дисплея
 }
@@ -223,9 +257,8 @@ void scr2(){                            //Функция отрисовки 2-г
   myOLED.clrScr();                      //Очистка буфера дисплея
   myOLED.setFont(SmallFont);
   myOLED.print(timeStr, CENTER, 4);     //Вывод информации на дисплей
-  myOLED.print(location, LEFT, 12);
-  myOLED.print("Max: " + String(temp_max) + " C", LEFT, 22);
-  myOLED.print("Min: " + String(temp_min) + " C", LEFT, 32);
+  myOLED.print("Max: " + String(temp_max) + " C", LEFT, 14);
+  myOLED.print("Min: " + String(temp_min) + " C", LEFT, 24);
   myOLED.print("Wind: " + String(wind) + "m/s", LEFT, 56);
   
   myOLED.print("C", 120, 14);
@@ -244,8 +277,15 @@ void scr2(){                            //Функция отрисовки 2-г
   if (temp >= 10){                      //От 10
     myOLED.print(String(temp), 89, 14);
   }
-  
-  myOLED.update();                      //Обновление дисплея
+  if (httpErrCount < 10){               //Если счетчик ошибок меньше 10, то
+    myOLED.update();                    //Обновление дисплея
+  } else {
+    myOLED.clrScr();                    //Иначе выводим сообщение об ошибке
+    myOLED.setFont(SmallFont);
+    myOLED.print("Could not Access", CENTER, 16);
+    myOLED.print("OpenWeatherMap", CENTER, 24);
+    myOLED.update();                    //Обновление дисплея
+  }
 }
 
 
@@ -254,9 +294,12 @@ void scr3(){                                    //Функция отрисов�
   myOLED.clrScr();                              //Очистка буфера дисплея
   myOLED.setFont(SmallFont);
   myOLED.print(timeStr, CENTER, 4);             //Вывод информации на дисплей
-  myOLED.print(location, LEFT, 12);
-  myOLED.print(weather, LEFT, 22);
-  myOLED.print("Clouds: " + String(clouds) + "%", LEFT, 32); 
+  
+  if (wID > 800) {
+    myOLED.print(weather + ":" + String(clouds) + "%", LEFT, 14);
+  } else {
+    myOLED.print(weather, LEFT, 14);
+  }
   myOLED.print("%", 120, 14);
 
   if (description.length() <= 21){              
@@ -278,7 +321,31 @@ void scr3(){                                    //Функция отрисов�
     myOLED.print(String(humidity), 102, 14);
   }
   
-  myOLED.update();                              //Обновление дисплея
+  if (httpErrCount < 10){                       //Если счетчик ошибок меньше 10, то
+    myOLED.update();                            //Обновление дисплея
+  } else {
+    myOLED.clrScr();                            //Иначе выводим сообщение об ошибке
+    myOLED.setFont(SmallFont);
+    myOLED.print("Could not Access", CENTER, 16);
+    myOLED.print("OpenWeatherMap", CENTER, 24);
+    myOLED.update();                            //Обновление дисплея
+  }
+}
+
+
+
+void nightScr() {                             //Функция отрисовки ночного экрана
+  //Размер надписи 48 x 8
+  if (millis() - rndTiming > 60000){          //Если 1 минута прошла
+    nightX = random(0, 80);                   //Генерим новые координаты для текста
+    nightY = random(0, 56);
+    rndTiming = millis();
+  }
+  myOLED.setBrightness(1);                    //Минимальная яркость
+  myOLED.clrScr();
+  myOLED.setFont(SmallFont);                  //Установка шрифта
+  myOLED.print(timeStr, nightX, nightY);      //Выводим надпись по координатам
+  myOLED.update();                            //Обновление дисплея
 }
 
 
@@ -301,6 +368,13 @@ void updScr() {                       //Функция обновления и �
   } else {
     timeStr = timeStr + String(ss);
   }     
+  
+  if ((hh >= hhOn) || (hh < hhOff)){  //Если время в нужном промежутке
+    nightScr();                       //Отрисовываем ночной экран
+    return;
+  } else {
+    myOLED.setBrightness(255);        //Выставляем макс. яркость
+  }
   
   switch(curScr) {                    //Смена экранов
     case 1:                           //Если сейчас экран 1
